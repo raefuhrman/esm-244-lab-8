@@ -1,0 +1,199 @@
+---
+title: "Lab8"
+author: "Rae Fuhrman"
+date: "2/28/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+# General packages
+library(tidyverse)
+library(janitor)
+library(plotly)
+library(RColorBrewer)
+
+# Packages for cluster analysis:
+library(NbClust)
+library(cluster)
+library(factoextra)
+library(dendextend)
+library(ggdendro)
+
+# Packages for text mining/sentiment analysis/word cloud
+library(pdftools)
+library(tidytext)
+library(wordcloud)
+
+```
+
+###Part 1. k means - number of randomly placed clusters and iterates through until it finds convergence and continues to move until your clusters are finalized
+
+```{r}
+
+#convert to snakecase
+iris_nice <- iris %>% 
+  janitor::clean_names()
+
+ggplot(iris_nice)+
+  geom_point(aes(x = petal_length, y = petal_width, color = species))
+
+```
+
+Now we ask R, how many clusters exist? 
+
+```{r}
+
+##determine the best number of clusters, uses 30 different algorithms 
+number_est <- NbClust(iris_nice[1:4], min.nc = 2, max.nc = 10, method = "kmeans")
+#we will stick with 3 clusters when we perform kmeans even though R suggests 2 conceptually we see 3, must # of specify groups first before kmeans
+
+##perform k means
+iris_km <- kmeans(iris_nice[1:4], 3)
+iris_km$size #how many observations in each cluster
+iris_km$centers #shows for each variable the multivariate center location with each cluster
+iris_km$cluster #which cluster is each observation assigned to
+
+iris_cl <- data.frame(iris_nice, cluster_no = factor(iris_km$cluster)) #take the info about clustering into dataframe with original data to make it easier to work with
+
+ggplot(iris_cl)+
+  geom_point(aes(x = sepal_length, y = sepal_width, color = cluster_no))
+
+ggplot(iris_cl) +
+  geom_point(aes(x = petal_length, 
+                 y = petal_width, 
+                 color = cluster_no, 
+                 pch = species)) +
+  scale_color_brewer(palette = "Set2") #pch is the shape change
+
+plot_ly(x = iris_cl$petal_length,
+        y = iris_cl$petal_width,
+        z = iris_cl$sepal_width,
+        type = "scatter3d",
+        color = iris_cl$cluster_no,
+        symbol = iris_cl$species,
+        colors = "Set1") #color is variable to create by, colors is the color scheme
+#can create plotly map widget 
+
+```
+
+###part 2. hierarchical cluster analysis
+
+```{r}
+
+wb_env <- read_csv("wb_env.csv")
+
+# Only keep top 20 greenhouse gas emitters (for simplifying visualization here...)
+wb_ghg_20 <- wb_env %>% 
+  arrange(-ghg) %>% 
+  head(20)
+
+# Scale it (can consider this for k-means clustering, too...)
+wb_scaled <- as.data.frame(scale(wb_ghg_20[3:7]))
+rownames(wb_scaled) <- wb_ghg_20$name #coerce the rownames to be the same
+
+diss <- dist(wb_scaled, method = "euclidean") #make a distance matrix by pairwise euclidean distnces
+
+##do hierarchical clustering by complete linkage
+hc_complete <- hclust(diss, method = "complete" )
+
+# Plot it (base plot):
+plot(hc_complete, cex = 0.6, hang = -1)
+
+```
+
+Divisive clustering:
+```{r}
+hc_div <- diana(diss)
+
+plot(hc_div)
+rect.hclust(hc_div, k = 4, border = 2:5)
+
+dend1 <- as.dendrogram(hc_complete)
+dend2 <- as.dendrogram(hc_div)
+
+tanglegram(dend1, dend2)
+
+##create dendograms with syntax similar to ggplot
+ggdendrogram(hc_complete,
+             rotate = TRUE)+ 
+             theme_minimal()
+
+```
+
+###Part 3. Intro to text analysis: pdftools, stringr, tidytext
+
+```{r}
+
+##extract text based info from pdf
+greta_thunberg <- file.path("greta_thunberg.pdf") #pdf text function wants this file path style
+thunberg_text <- pdf_text(greta_thunberg)
+thunberg_text
+
+thunberg_df <- data.frame(text= thunberg_text) %>% 
+  mutate(text_full = str_split(text, '\\n')) %>% 
+  unnest(text_full) #split up text which is column name by \n, and add another \ so it knows it isnt actually functional use symbol 
+
+speech_text <- thunberg_df %>% # Get the full speech
+  select(text_full) %>% # Only keep the text
+  slice(4:18) # Filter by row number
+
+sep_words <- speech_text %>% 
+  unnest_tokens(word, text_full)
+
+word_count <- sep_words %>% 
+  count(word, sort = TRUE)
+  
+  #remove "stop words" like the, and, be, etc. lexicon built into R
+  
+words_stop <- sep_words %>% 
+  anti_join(stop_words)
+
+pos_words <- get_sentiments("afinn") %>% 
+  filter(score == 5 | score == 4) %>% 
+  head(20)
+
+neutral_words <- get_sentiments("afinn") %>% 
+  filter(score, -1,1) %>% 
+  head(20)
+
+neg_words <- get_sentiments("afinn") %>% 
+  filter(score == -5 | score == -4) %>% 
+  head(20)
+
+```
+
+##bind some lexicon info to our actual speech words (non stop-words)
+
+```{r}
+
+#use full join in case youarent sure, keeps everything from both dataframes whether they have a match or not. Inner join must have match in both
+sent_afinn <- words_stop %>% 
+  inner_join(get_sentiments("afinn"))
+
+sent_nrc <- words_stop %>% 
+  inner_join(get_sentiments("nrc"))
+
+nrc_count <- sent_nrc %>% 
+  group_by(sentiment) %>% 
+  tally()
+
+sent_bing <- words_stop %>% 
+  inner_join(get_sentiments("bing"))
+
+```
+
+
+Make a word cloud:
+
+```{r}
+wordcloud(word_count$word, 
+          freq = word_count$n, 
+          min.freq = 1, 
+          max.words = 65, 
+          scale = c(2, 0.1),
+          colors = brewer.pal(3, "Dark2")) #scale is actual word sizes 
+```
